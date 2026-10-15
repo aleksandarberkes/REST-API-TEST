@@ -1,0 +1,24 @@
+{
+  "name": "@eventload/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.3",
+    "@types/node": "22.18.8",
+    "@types/pg": "8.15.5",
+    "@types/supertest": "6.0.3",
+    "typescript": "5.9.3",
+    "supertest": "7.1.4",
+    "vitest": "3.2.4"
+  }
+}

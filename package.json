@@ -1,0 +1,22 @@
+{
+  "name": "eventload",
+  "private": true,
+  "description": "EventLoad: REST API load-testing lab (Express + PostgreSQL + k6)",
+  "workspaces": [
+    "api",
+    "runner",
+    "ui"
+  ],
+  "scripts": {
+    "setup": "tsx runner/src/cli.ts setup",
+    "lt": "tsx runner/src/cli.ts",
+    "ui": "npm run build -w ui && tsx runner/src/cli.ts ui",
+    "ui:dev": "npm run dev -w ui",
+    "test": "npm run test -w api && npm run test -w runner",
+    "typecheck": "npm run typecheck -w runner && npm run typecheck -w ui && tsc --noEmit -p api"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

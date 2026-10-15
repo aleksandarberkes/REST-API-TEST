@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+.DS_Store
+results/runs/*
+!results/runs/.gitkeep
+ui/dist/
+docs/

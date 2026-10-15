@@ -1,0 +1,265 @@
+{
+  "targets": {
+    "health": {
+      "title": "Health check (no database)",
+      "request": "GET /api/health",
+      "kind": "read",
+      "cost": "Node + HTTP only",
+      "description": "Returns a constant JSON object without touching PostgreSQL.",
+      "why": "Baseline: the ceiling of Express itself. Anything slower than this is cost added by the database or by our own code.",
+      "expect": "Highest throughput of all targets; the API core hits 100 % CPU before anything else fails."
+    },
+    "event-by-id": {
+      "title": "Event by id",
+      "request": "GET /api/events/:id",
+      "kind": "read",
+      "cost": "1 primary-key lookup + JOIN categories",
+      "description": "Fetches one random event (id 1–1000) through its primary key index.",
+      "why": "The cheapest realistic DB read, used for the main scaling experiment (E1).",
+      "expect": "Latency flat in the low milliseconds until the API core saturates; then p95/p99 shoot up and throughput stops following the offered rate."
+    },
+    "events-page": {
+      "title": "Paginated event list",
+      "request": "GET /api/events?page=N&limit=20",
+      "kind": "read",
+      "cost": "2 queries: ORDER BY + OFFSET page, COUNT(*)",
+      "description": "Random page 1–50 of 20 events, plus the total count.",
+      "why": "Typical list endpoint: two queries per request and a bigger JSON response (more serialization work for Node).",
+      "expect": "Knee at a lower rate than event-by-id; more CPU per request in both API and DB."
+    },
+    "events-category": {
+      "title": "Events filtered by category",
+      "request": "GET /api/events?category=slug",
+      "kind": "read",
+      "cost": "JOIN + indexed filter + COUNT",
+      "description": "Random category out of 20; uses the category_id index.",
+      "why": "Shows the cost of a filter + join compared with a plain primary-key lookup.",
+      "expect": "Similar to the paginated list; the index keeps the database side cheap."
+    },
+    "events-search": {
+      "title": "Text search (ILIKE)",
+      "request": "GET /api/events/search?q=word",
+      "kind": "read",
+      "cost": "Sequential scan over all event texts",
+      "description": "ILIKE '%word%' over titles and descriptions. No B-tree index can serve this, so PostgreSQL reads every row.",
+      "why": "Database-bound endpoint: the bottleneck should move from the API to PostgreSQL.",
+      "expect": "DB CPU rises much faster than for other reads; the pool wait count grows as queries take longer."
+    },
+    "event-registrations": {
+      "title": "Registrations of an event",
+      "request": "GET /api/events/:id/registrations",
+      "kind": "read",
+      "cost": "JOIN registrations × users, ~50 rows of JSON",
+      "description": "All registrations of a random event, each joined with its user.",
+      "why": "Large response body: JSON.stringify of ~50 rows blocks the single Node event loop.",
+      "expect": "Event-loop lag and API CPU climb earlier than for small responses."
+    },
+    "category-stats": {
+      "title": "Category statistics (aggregate)",
+      "request": "GET /api/stats/categories",
+      "kind": "read",
+      "cost": "GROUP BY over 50 000 registrations",
+      "description": "Counts registrations per category: a reporting query that touches the whole registrations table.",
+      "why": "The heaviest read: shows what happens when every request is an analytical query.",
+      "expect": "Lowest sustainable rate; PostgreSQL is the bottleneck and requests queue in the pg pool."
+    },
+    "create-event": {
+      "title": "Create event",
+      "request": "POST /api/events",
+      "kind": "write",
+      "cost": "1 INSERT + WAL flush on commit",
+      "description": "Inserts a new event with random data.",
+      "why": "Simplest write: every commit must be flushed to the write-ahead log (fsync), which reads never pay.",
+      "expect": "Slower than reads at the same rate; DB CPU and IO dominate."
+    },
+    "register": {
+      "title": "Register for an event",
+      "request": "POST /api/events/:id/register",
+      "kind": "write",
+      "cost": "Transaction: UPDATE … (row lock) + INSERT + COMMIT",
+      "description": "Random user (1–10 000) registers for a random event (1–1000). 409 (already registered / full) is an expected business answer, not an error.",
+      "why": "The core business operation: a multi-statement transaction holding a pooled connection for its whole duration.",
+      "expect": "Highest per-request cost of the normal endpoints; pool waiting grows first."
+    },
+    "mix-100-0": {
+      "title": "Mix 100 % read / 0 % write",
+      "request": "random read endpoint",
+      "kind": "mix",
+      "mix": { "read": 100, "write": 0 },
+      "description": "Every iteration is one of: event by id, paginated list, category filter.",
+      "why": "Reference point for the read/write mix experiment (E3).",
+      "expect": "Lowest latency in the mix series."
+    },
+    "mix-80-20": {
+      "title": "Mix 80 % read / 20 % write",
+      "request": "reads + POST register",
+      "kind": "mix",
+      "mix": { "read": 80, "write": 20 },
+      "description": "Typical web-shop-like ratio: mostly browsing, some registrations.",
+      "why": "Realistic traffic shape.",
+      "expect": "Slightly higher p95 than 100 % read."
+    },
+    "mix-50-50": {
+      "title": "Mix 50 % read / 50 % write",
+      "request": "reads + POST register",
+      "kind": "mix",
+      "mix": { "read": 50, "write": 50 },
+      "description": "Half of all requests are registrations.",
+      "why": "Middle of the mix series.",
+      "expect": "Clearly higher DB load and latency."
+    },
+    "mix-20-80": {
+      "title": "Mix 20 % read / 80 % write",
+      "request": "reads + POST register",
+      "kind": "mix",
+      "mix": { "read": 20, "write": 80 },
+      "description": "Mostly registrations, like the minute registration opens.",
+      "why": "Write-heavy traffic.",
+      "expect": "Close to the pure-write result."
+    },
+    "mix-0-100": {
+      "title": "Mix 0 % read / 100 % write",
+      "request": "POST register only",
+      "kind": "mix",
+      "mix": { "read": 0, "write": 100 },
+      "description": "Only registrations.",
+      "why": "Upper bound of write cost.",
+      "expect": "Highest latency and DB CPU in the mix series."
+    },
+    "hot-event-rush": {
+      "title": "Hot-event rush (contention)",
+      "request": "POST /api/events/HOT/register",
+      "kind": "write",
+      "cost": "All transactions lock the SAME row",
+      "description": "setup() creates one event with 500 seats; every request tries to register a random user for that one event. The first 500 succeed, the rest get 409 'full'.",
+      "why": "Row-lock contention: requests wait for each other inside PostgreSQL. Also a correctness test: registrations must never exceed capacity.",
+      "expect": "Latency grows with rate even at modest load because transactions serialize on one row; registered_count ends exactly at 500."
+    }
+  },
+
+  "profiles": {
+    "smoke": {
+      "title": "Smoke",
+      "executor": "constant-vus",
+      "defaults": { "rate": 1, "duration": "30s" },
+      "description": "1 virtual user, one request every 0.1 s (~10 req/s).",
+      "why": "Sanity check that the endpoint works and the script is correct before a real test. Not a measurement."
+    },
+    "constant": {
+      "title": "Constant rate (average load)",
+      "executor": "constant-arrival-rate",
+      "defaults": { "rate": 100, "duration": "60s" },
+      "description": "Exactly RATE new requests start every second for DURATION, no matter how slow the API gets (open model).",
+      "why": "The measurement profile. Holding the offered load constant lets us compare levels; if the API cannot keep up, k6 reports dropped iterations instead of silently slowing down (avoids coordinated omission)."
+    },
+    "stress": {
+      "title": "Stress (ramp up)",
+      "executor": "ramping-arrival-rate",
+      "defaults": { "rate": 2000, "duration": "5m" },
+      "description": "Rate grows linearly from 1 to RATE over DURATION.",
+      "why": "Shows the whole latency-vs-load curve in one run and roughly where degradation starts, so you know which constant levels to measure."
+    },
+    "spike": {
+      "title": "Spike",
+      "executor": "ramping-arrival-rate",
+      "defaults": { "rate": 1000, "duration": "30s" },
+      "description": "Quiet base load (5 % of RATE), a jump to RATE in 5 s, held for DURATION, then back down to base.",
+      "why": "Simulates the moment registrations open. Shows whether the API survives a sudden burst and how fast latency recovers afterwards."
+    },
+    "soak": {
+      "title": "Soak (endurance)",
+      "executor": "constant-arrival-rate",
+      "defaults": { "rate": 100, "duration": "20m" },
+      "description": "Moderate constant load for a long time.",
+      "why": "Finds problems that only appear over time: memory leaks (RSS keeps growing), connection leaks, slow drift in latency."
+    },
+    "breakpoint": {
+      "title": "Breakpoint",
+      "executor": "ramping-arrival-rate",
+      "defaults": { "rate": 5000, "duration": "5m" },
+      "description": "Keeps ramping towards RATE and aborts automatically when p95 > 1 s, more than 5 % of requests fail, or k6 has to drop iterations because responses are too slow.",
+      "why": "Finds the maximum rate the system can handle; the rate at the moment of abort is the breaking point."
+    }
+  },
+
+  "experiments": [
+    {
+      "id": "E1",
+      "title": "Scaling: latency vs request rate (main experiment)",
+      "question": "How does increasing the request rate affect latency, throughput, CPU and memory, and at what rate does performance degrade significantly?",
+      "hypothesis": "Latency stays flat while the single API core has spare capacity; past a knee, p95/p99 rise sharply, achieved throughput stops following the offered rate and errors appear.",
+      "description": "GET /api/events/:id at increasing constant rates. Each level is a separate run with a fresh API and DB. The levels go past the 10–1000 req/s from the original plan because a pilot showed one pinned M3 core serves ~5000 req/s for this endpoint.",
+      "profile": "constant",
+      "targets": ["event-by-id"],
+      "rates": [10, 50, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000],
+      "duration": "60s",
+      "reps": 5,
+      "xAxis": "rate"
+    },
+    {
+      "id": "E2",
+      "title": "Endpoint comparison at equal load",
+      "question": "How much does the kind of work an endpoint does change its behaviour at the same request rate?",
+      "hypothesis": "Endpoints with heavier queries or larger responses show higher latency and saturate a different resource (API CPU vs DB CPU).",
+      "description": "All read endpoints at the same constant rate.",
+      "profile": "constant",
+      "targets": ["health", "event-by-id", "events-page", "events-category", "events-search", "event-registrations", "category-stats"],
+      "rates": [500],
+      "duration": "60s",
+      "reps": 5,
+      "xAxis": "target"
+    },
+    {
+      "id": "E3",
+      "title": "Read/write mix at equal total load",
+      "question": "How does the share of write requests affect performance at the same total rate?",
+      "hypothesis": "Latency and DB CPU grow with the write share, because writes hold transactions and flush the WAL.",
+      "description": "Mixes from 100 % read to 100 % write at the same constant rate.",
+      "profile": "constant",
+      "targets": ["mix-100-0", "mix-80-20", "mix-50-50", "mix-20-80", "mix-0-100"],
+      "rates": [500],
+      "duration": "60s",
+      "reps": 5,
+      "xAxis": "target"
+    },
+    {
+      "id": "E4",
+      "title": "Spike: registrations open",
+      "question": "Does the API survive a sudden burst and how fast does it recover?",
+      "hypothesis": "Short latency peak during the jump, recovery within seconds once the spike ends.",
+      "description": "80/20 mix with a sudden jump to the peak rate.",
+      "profile": "spike",
+      "targets": ["mix-80-20"],
+      "rates": [500, 1000],
+      "duration": "30s",
+      "reps": 3,
+      "xAxis": "rate"
+    },
+    {
+      "id": "E5",
+      "title": "Hot-event contention",
+      "question": "How does lock contention on a single row affect latency as the rate grows?",
+      "hypothesis": "Latency grows faster than for spread-out registrations because transactions wait on the same row lock; capacity is never exceeded.",
+      "description": "Everyone registers for the same event at increasing rates.",
+      "profile": "constant",
+      "targets": ["hot-event-rush"],
+      "rates": [50, 100, 250, 500],
+      "duration": "30s",
+      "reps": 3,
+      "xAxis": "rate"
+    },
+    {
+      "id": "E6",
+      "title": "Breaking points",
+      "question": "What is the maximum sustainable rate of each type of endpoint?",
+      "hypothesis": "health > event-by-id > register > events-search.",
+      "description": "Breakpoint ramp per endpoint until it breaks. The highest per-second rate the API actually served (api_rps_max) is the breaking point.",
+      "profile": "breakpoint",
+      "targets": ["health", "event-by-id", "register", "events-search"],
+      "rates": [10000],
+      "duration": "3m",
+      "reps": 1,
+      "xAxis": "target"
+    }
+  ]
+}

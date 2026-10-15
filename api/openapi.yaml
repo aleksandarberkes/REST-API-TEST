@@ -1,0 +1,69 @@
+openapi: 3.0.3
+info:
+  title: EventLoad API
+  version: 1.0.0
+  description: Event registration backend used as the system under test for load experiments.
+paths:
+  /api/health:
+    get: { summary: Liveness check (no DB), responses: { '200': { description: OK } } }
+  /api/events:
+    get:
+      summary: Paginated list of events, optionally filtered by category slug
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: category, in: query, schema: { type: string, example: technology } }
+      responses: { '200': { description: Page of events }, '400': { description: Invalid query } }
+    post:
+      summary: Create an event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventInput' }
+      responses: { '201': { description: Created }, '400': { description: Invalid body } }
+  /api/events/search:
+    get:
+      summary: Full-text-ish search (ILIKE) over title and description
+      parameters: [{ name: q, in: query, required: true, schema: { type: string, minLength: 2 } }]
+      responses: { '200': { description: Matches (max 50) } }
+  /api/events/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+    get: { summary: Event by id, responses: { '200': { description: Event }, '404': { description: Not found } } }
+    put:
+      summary: Replace an event
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EventInput' } } } }
+      responses: { '200': { description: Updated }, '404': { description: Not found } }
+    delete: { summary: Delete an event, responses: { '204': { description: Deleted }, '404': { description: Not found } } }
+  /api/events/{id}/register:
+    post:
+      summary: Register a user for an event (transaction with capacity check)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [userId], properties: { userId: { type: integer } } } } }
+      responses:
+        '201': { description: Registered }
+        '404': { description: Event or user not found }
+        '409': { description: Event full or already registered }
+  /api/events/{id}/registrations:
+    get:
+      summary: Registrations for an event, joined with users
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { '200': { description: List } }
+  /api/stats/categories:
+    get: { summary: Aggregate registrations per category (DB-heavy), responses: { '200': { description: Stats } } }
+  /internal/metrics:
+    get: { summary: Per-second counters for the runner (event-loop lag, pool, memory), responses: { '200': { description: Snapshot } } }
+components:
+  schemas:
+    EventInput:
+      type: object
+      required: [title, location, capacity, categoryId, startDate]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        location: { type: string }
+        capacity: { type: integer, minimum: 1 }
+        categoryId: { type: integer, minimum: 1 }
+        startDate: { type: string, format: date-time }
